@@ -46,8 +46,8 @@ student_name_rl_summative/
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/student_name_rl_summative.git
-cd student_name_rl_summative
+git clone https://github.com/Gakwaya011/Christophe_Gakwaya_rl_summative.git
+cd Christophe_Gakwaya_rl_summative
 ```
 
 2. Install dependencies:
