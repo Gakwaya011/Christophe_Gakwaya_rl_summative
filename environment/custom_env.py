@@ -1,163 +1,192 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
-import random
-from .rendering import PygameRenderer
+from typing import Tuple, Dict, Any, Optional
 
-# --- Constants for Simulation ---
-# Defines the effect of each action (diet) on the athlete's recovery potential.
-# Higher value means a greater positive impact on recovery metrics (HRV, Fatigue)
-RECOVERY_EFFECTS = {
-    0: 1.5,  # Recovery (High Protein, Low Carb) - Maximize repair
-    1: 1.0,  # Endurance (High Carb) - Good for energy
-    2: 0.5,  # Balanced Maintenance - Neutral
-    3: -0.5, # Calorie Surplus - Focus on mass, may slightly delay recovery rate
-    4: -1.0, # Calorie Deficit - Stressful on the body, actively hinders recovery
-}
-
-# --- Main Environment Class ---
-class AthleteRecoveryEnv(gym.Env):
+class SimpleAthleteNutritionEnv(gym.Env):
     """
-    A custom Gymnasium environment for an RL agent (Nutrition Recommender)
-    to optimize an athlete's recovery and performance.
+    Simplified Environment for Athlete Nutrition Optimization
+    
+    Core Mission: Learn to balance 3 key macronutrients for optimal recovery
     """
     
-    # 1. Initialization and Space Definition
-    def __init__(self, max_ep_steps=30):
+    metadata = {'render_modes': ['human', 'rgb_array'], 'render_fps': 4}
+    
+    def __init__(self, athlete_weight: float = 70.0, render_mode: Optional[str] = None):
         super().__init__()
-        self.max_ep_steps = max_ep_steps
-        self.current_step = 0
-
-        # Action Space: Discrete set of 5 diet profiles (the agent's recommendation)
-        self.action_space = spaces.Discrete(5)
         
-        # Observation Space: 5 key metrics describing the athlete's state
-        # [Recovery_HRV, Fatigue_Score, Energy_Deficit, Workout_Intensity, Days_in_Phase]
+        self.athlete_weight = athlete_weight
+        self.render_mode = render_mode
+        
+        # SIMPLIFIED: 9 discrete actions (3 protein levels × 3 carb levels)
+        self.action_space = spaces.Discrete(9)
+        
+        # SIMPLIFIED: 4 core features instead of 8
         self.observation_space = spaces.Box(
-            low=np.array([0.0, 0.0, -1000.0, 0.0, 0]),
-            high=np.array([1.0, 5.0, 1000.0, 1.0, 30]),
+            low=np.array([0, 40, 0, 0], dtype=np.float32),    # day, hrv, fatigue, glycogen
+            high=np.array([14, 100, 100, 100], dtype=np.float32),  # 15-day episodes
             dtype=np.float32
         )
         
-        # Map for Action Index to descriptive name (used in R_alignment calculation)
-        self.ACTION_MAP = {
-            0: 'Recovery', 1: 'Endurance', 2: 'Balanced', 3: 'Surplus', 4: 'Deficit'
-        }
+        # SIMPLIFIED: Fewer macro levels
+        self.protein_levels = np.array([1.2, 1.6, 2.0])  # g/kg
+        self.carb_levels = np.array([3.0, 5.0, 7.0])     # g/kg
         
-        # Internal state variable
-        self.state = None
-
-    # 2. Reset Function
-    def reset(self, seed=None, options=None):
+        # Training schedule (simpler)
+        self.training_schedule = self._generate_training_schedule()
+        
+        # State variables
+        self.current_day = 0
+        self.hrv = 70.0
+        self.fatigue = 30.0
+        self.glycogen = 80.0
+        
+        # History for visualization
+        self.history = {'hrv': [], 'fatigue': [], 'glycogen': [], 'rewards': []}
+        
+    def _generate_training_schedule(self) -> np.ndarray:
+        """Simplified 15-day schedule"""
+        schedule = np.zeros(15)
+        for week in range(2):
+            base = week * 7
+            schedule[base:base+5] = np.random.uniform(6, 8, 5)  # Training
+            schedule[base+5] = 3  # Light
+            schedule[base+6] = 0  # Rest
+        schedule[-1] = 0  # Final rest day
+        return schedule
+    
+    def _decode_action(self, action: int) -> Tuple[float, float]:
+        """Convert 9 discrete actions to protein/carb values"""
+        protein_idx = action // 3
+        carb_idx = action % 3
+        
+        protein = self.protein_levels[protein_idx] * self.athlete_weight
+        carbs = self.carb_levels[carb_idx] * self.athlete_weight
+        
+        return protein, carbs
+    
+    def _update_physiology(self, protein: float, carbs: float):
+        """SIMPLIFIED physiological model"""
+        training = self.training_schedule[self.current_day]
+        
+        # 1. Glycogen dynamics (simplified)
+        glycogen_use = training * 7
+        glycogen_gain = carbs * 0.12
+        self.glycogen = np.clip(self.glycogen - glycogen_use + glycogen_gain, 0, 100)
+        
+        # 2. Fatigue (simplified)
+        fatigue_gain = training * 5
+        recovery = (protein / (1.6 * self.athlete_weight)) * 12 + (self.glycogen / 100) * 8
+        self.fatigue = np.clip(self.fatigue + fatigue_gain - recovery, 0, 100)
+        
+        # 3. HRV (simplified)
+        hrv_change = 0
+        if self.fatigue < 40: hrv_change += 1.5
+        elif self.fatigue > 70: hrv_change -= 2
+        
+        if self.glycogen > 60: hrv_change += 1
+        
+        # Add small randomness
+        hrv_change += np.random.normal(0, 1)
+        self.hrv = np.clip(self.hrv + hrv_change, 40, 100)
+    
+    def _calculate_reward(self) -> float:
+        """SIMPLIFIED reward function with denser rewards"""
+        reward = 0
+        
+        # HRV reward (denser)
+        if 60 <= self.hrv <= 80:
+            reward += 25
+        elif 55 <= self.hrv < 60 or 80 < self.hrv <= 85:
+            reward += 10
+        elif self.hrv < 50:
+            reward -= 15
+        
+        # Fatigue reward (denser)
+        if self.fatigue < 40:
+            reward += 20
+        elif self.fatigue > 70:
+            reward -= 20
+        
+        # Glycogen reward (denser)
+        if 60 <= self.glycogen <= 90:
+            reward += 15
+        elif self.glycogen < 30:
+            reward -= 15
+        
+        # Small penalty for extreme values (encourages balance)
+        if self.fatigue > 85:
+            reward -= 25
+        
+        return reward
+    
+    def reset(self, seed: Optional[int] = None, options: Optional[dict] = None) -> Tuple[np.ndarray, Dict]:
         super().reset(seed=seed)
-        self.current_step = 0
-
-        # Initialize the athlete to a 'baseline/recovered' state
-        initial_hrv = random.uniform(0.8, 0.9) # High Recovery
-        initial_fatigue = random.uniform(0.5, 1.0) # Low Fatigue
-        initial_deficit = 0.0 # Balanced Energy
-        initial_intensity = random.uniform(0.1, 0.3) # Low initial intensity
-        initial_days = 1
         
-        self.state = np.array([
-            initial_hrv, 
-            initial_fatigue, 
-            initial_deficit, 
-            initial_intensity, 
-            initial_days
-        ], dtype=np.float32)
+        # Reset state
+        self.current_day = 0
+        self.hrv = 70.0 + np.random.uniform(-5, 5)
+        self.fatigue = 30.0 + np.random.uniform(-10, 10)
+        self.glycogen = 80.0 + np.random.uniform(-10, 10)
         
-        # Placeholder for auxiliary information
-        info = {}
+        self.history = {'hrv': [], 'fatigue': [], 'glycogen': [], 'rewards': []}
+        self.training_schedule = self._generate_training_schedule()
         
-        return self.state, info
-
-    # 3. Step Function (The Core RL Loop)
-    def step(self, action):
-        self.current_step += 1
+        return self._get_observation(), self._get_info()
+    
+    def step(self, action: int) -> Tuple[np.ndarray, float, bool, bool, Dict]:
+        protein, carbs = self._decode_action(action)
         
-        # --- 1. Apply Action and Simulate State Transition ---
+        # Update state
+        self._update_physiology(protein, carbs)
         
-        # Get the effect of the recommended diet
-        diet_effect = RECOVERY_EFFECTS[action]
+        # Calculate reward
+        reward = self._calculate_reward()
         
-        # Current State Variables (for cleaner reading)
-        hrv, fatigue, deficit, intensity, days = self.state
+        # Store history
+        self.history['hrv'].append(self.hrv)
+        self.history['fatigue'].append(self.fatigue)
+        self.history['glycogen'].append(self.glycogen)
+        self.history['rewards'].append(reward)
         
-        # Simulate New State (Day t+1) based on Action and Current State
+        # Advance day
+        self.current_day += 1
         
-        # A. New Recovery (HRV): Improved by diet effect, reduced by previous intensity/fatigue
-        new_hrv = hrv + (diet_effect * 0.1) - (fatigue * 0.05) + random.uniform(-0.02, 0.02)
+        # Check termination (15 days instead of 30)
+        terminated = self.current_day >= 14
         
-        # B. New Fatigue: Increased by previous intensity, reduced by good recovery action
-        new_fatigue = fatigue + (intensity * 0.4) - (diet_effect * 0.15) + random.uniform(-0.1, 0.1)
+        # Terminal bonus
+        if terminated:
+            avg_hrv = np.mean(self.history['hrv'])
+            if avg_hrv > 65:
+                reward += 100
+            elif avg_hrv > 60:
+                reward += 50
         
-        # C. New Energy Deficit: Directly linked to diet profile (Surplus/Deficit)
-        # Assuming high carb/surplus adds energy, deficit subtracts
-        energy_change = [50, 100, 0, 200, -200][action] 
-        new_deficit = deficit + energy_change
-        
-        # D. Simulate Next Day's Workout Intensity (The Outcome Metric)
-        # Intensity should be hampered by high fatigue but boosted by high recovery (HRV)
-        base_intensity_potential = 0.6 # The athlete's goal intensity
-        potential_loss = new_fatigue * 0.1 # Penalty from fatigue
-        potential_gain = new_hrv * 0.2 # Gain from recovery
-        new_intensity = base_intensity_potential + potential_gain - potential_loss + random.uniform(-0.1, 0.1)
-        
-        # Clip all new state values to their bounds
-        new_state = np.array([
-            np.clip(new_hrv, 0.0, 1.0),
-            np.clip(new_fatigue, 0.0, 5.0),
-            np.clip(new_deficit, -1000.0, 1000.0),
-            np.clip(new_intensity, 0.0, 1.0), # Intensity cannot be negative or > 1.0
-            days + 1
-        ], dtype=np.float32)
-        
-        # --- 2. Calculate Reward ---
-        
-        # Reward 1: Recovery Bonus (Agent's primary goal)
-        R_recovery = 50.0 * new_state[0] # High HRV is rewarded heavily
-        
-        # Reward 2: Fatigue/Injury Penalty
-        R_fatigue = -20.0 * new_state[1] # High fatigue is penalized
-        
-        # Reward 3: Performance Alignment (Rewarding sustainable performance)
-        # Target: Keep intensity high (near 0.6-0.8) without crashing recovery metrics.
-        # This rewards the agent for not letting performance drop, and penalizes crashes.
-        R_performance_alignment = 50.0 * new_state[3] # Reward based on next day's achieved intensity
-        
-        # Reward 4: Penalty for extreme states (e.g., massive deficit)
-        R_stability_penalty = 0.0
-        if abs(new_deficit) > 800:
-             R_stability_penalty = -50.0 # Punish unsustainable energy management
-        
-        reward = R_recovery + R_fatigue + R_performance_alignment + R_stability_penalty
-
-        # --- 3. Check Termination Conditions ---
-        
-        terminated = False
         truncated = False
         
-        # Termination: Athlete crashes (Injury/Burnout) - severe fatigue
-        if new_fatigue >= 4.5:
-            terminated = True
-            reward -= 200 # Heavy penalty for failing the mission
-            
-        # Truncation: Max steps reached (Episode Time Limit)
-        if self.current_step >= self.max_ep_steps:
-            truncated = True
-
-        self.state = new_state
-        
-        return self.state, reward, terminated, truncated, {}
-
+        return self._get_observation(), reward, terminated, truncated, self._get_info()
+    
+    def _get_observation(self) -> np.ndarray:
+        return np.array([
+            self.current_day,
+            self.hrv,
+            self.fatigue,
+            self.glycogen
+        ], dtype=np.float32)
+    
+    def _get_info(self) -> Dict[str, Any]:
+        return {
+            'day': self.current_day,
+            'training_today': self.training_schedule[self.current_day] if self.current_day < 15 else 0,
+            'total_reward': sum(self.history['rewards']) if self.history['rewards'] else 0
+        }
     def render(self):
-        # This is where your pygame/visualization code will go.
-        # For now, we'll keep it simple until the visualization file is created.
-        pass
-
-    def close(self):
-        # Used for cleaning up resources, like closing the pygame window.
-        pass
-
-# End of custom_env.py
+        if self.render_mode == "human":
+            total_reward = sum(self.history['rewards']) if self.history['rewards'] else 0
+            print(f"\n=== Day {self.current_day + 1}/30 ===")
+            print(f"HRV: {self.hrv:.1f} ms | Fatigue: {self.fatigue:.1f}% | Glycogen: {self.glycogen:.1f}%")
+            print(f"Protein Balance: {self.protein_balance:+.1f}g | Hydration: {self.hydration:.1f}%")
+            print(f"Training Load: {self.training_load:.1f} | Weight Change: {self.weight_change:+.2f}kg")
+            print(f"Step Reward: {self.history['rewards'][-1] if self.history['rewards'] else 0:.1f} | Total Reward: {total_reward:.1f}")
+    
